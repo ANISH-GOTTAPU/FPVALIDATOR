@@ -115,6 +115,7 @@ func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
             continue
         }
 
+        // Check for TestMain function
         if fn.Name.Name == "TestMain" && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
             if se, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
                 if ident, ok := se.X.(*ast.SelectorExpr); ok {
@@ -126,6 +127,7 @@ func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
             continue
         }
 
+        // Collect test functions
         if strings.HasPrefix(fn.Name.Name, "Test") {
             testFuncs = append(testFuncs, fn)
         }
@@ -141,7 +143,7 @@ func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
     }
 
     if len(testFuncs) > 1 {
-        *errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
+        *errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table-driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
     }
 
     // Validate the single allowed test function
@@ -154,9 +156,32 @@ func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
             if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
                 for _, spec := range genDecl.Specs {
                     if vs, ok := spec.(*ast.ValueSpec); ok {
+                        // Case 1: Explicit slice type
                         if _, ok := vs.Type.(*ast.ArrayType); ok {
                             hasSliceDecl = true
                         }
+
+                        // Case 2: Inferred slice type via composite literal
+                        if vs.Type == nil {
+                            for _, val := range vs.Values {
+                                if cl, ok := val.(*ast.CompositeLit); ok {
+                                    switch cl.Type.(type) {
+                                    case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
+                                        hasSliceDecl = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        case *ast.AssignStmt:
+            // Handle inferred slice via := assignment
+            for _, rhs := range stmt.Rhs {
+                if cl, ok := rhs.(*ast.CompositeLit); ok {
+                    switch cl.Type.(type) {
+                    case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
+                        hasSliceDecl = true
                     }
                 }
             }
@@ -167,7 +192,7 @@ func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
     })
 
     if !(hasSliceDecl && hasForLoop) {
-        *errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern please follow table driven approach ref:https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
+        *errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern. Please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
     }
 }
 
