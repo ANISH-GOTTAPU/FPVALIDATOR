@@ -20,68 +20,9 @@ func validateGoFile(path string, errs *[]string) {
 		return
 	}
 
-    hasTestMain := false
-    var testFuncs []*ast.FuncDecl
-
-    for _, decl := range f.Decls {
-        fn, ok := decl.(*ast.FuncDecl)
-        if !ok || fn.Type == nil || fn.Body == nil {
-            continue
-        }
-
-        if fn.Name.Name == "TestMain" && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
-            if se, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
-                if ident, ok := se.X.(*ast.SelectorExpr); ok {
-                    if pkgIdent, ok := ident.X.(*ast.Ident); ok && pkgIdent.Name == "testing" && ident.Sel.Name == "M" {
-                        hasTestMain = true
-                    }
-                }
-            }
-            continue
-        }
-
-        if strings.HasPrefix(fn.Name.Name, "Test") {
-            testFuncs = append(testFuncs, fn)
-        }
-    }
-
-    if !hasTestMain {
-        *errs = append(*errs, fmt.Sprintf("%s: missing TestMain function", path))
-    }
-
-    if len(testFuncs) == 0 {
-        *errs = append(*errs, fmt.Sprintf("%s: no test functions found", path))
-        return
-    }
-
-    if len(testFuncs) > 1 {
-        *errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
-    }
-
-    // Validate the single allowed test function
-    mainTest := testFuncs[0]
-    var hasSliceDecl, hasForLoop bool
-
-    ast.Inspect(mainTest.Body, func(n ast.Node) bool {
-        switch stmt := n.(type) {
-        case *ast.DeclStmt:
-            if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
-                for _, spec := range genDecl.Specs {
-                    if vs, ok := spec.(*ast.ValueSpec); ok {
-                        if _, ok := vs.Type.(*ast.ArrayType); ok {
-                            hasSliceDecl = true
-                        }
-                    }
-                }
-            }
-        case *ast.RangeStmt:
-            hasForLoop = true
-        }
-        return true
-    })
-
-    if !(hasSliceDecl && hasForLoop) {
-        *errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern please follow table driven approach ref:https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
+	
+    if strings.HasSuffix(path, "_test.go") {
+        validateTestFileStructure(path, f, errs)
     }
 
 	for _, d := range f.Decls {
@@ -162,6 +103,72 @@ func validateGoFile(path string, errs *[]string) {
 	checkMixedCaps(path, f, errs)
 	fileErrs := scanFileForPatterns(path)
 	*errs = append(*errs, fileErrs...)
+}
+
+func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
+    hasTestMain := false
+    var testFuncs []*ast.FuncDecl
+
+    for _, decl := range f.Decls {
+        fn, ok := decl.(*ast.FuncDecl)
+        if !ok || fn.Type == nil || fn.Body == nil {
+            continue
+        }
+
+        if fn.Name.Name == "TestMain" && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
+            if se, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
+                if ident, ok := se.X.(*ast.SelectorExpr); ok {
+                    if pkgIdent, ok := ident.X.(*ast.Ident); ok && pkgIdent.Name == "testing" && ident.Sel.Name == "M" {
+                        hasTestMain = true
+                    }
+                }
+            }
+            continue
+        }
+
+        if strings.HasPrefix(fn.Name.Name, "Test") {
+            testFuncs = append(testFuncs, fn)
+        }
+    }
+
+    if !hasTestMain {
+        *errs = append(*errs, fmt.Sprintf("%s: missing TestMain function", path))
+    }
+
+    if len(testFuncs) == 0 {
+        *errs = append(*errs, fmt.Sprintf("%s: no test functions found", path))
+        return
+    }
+
+    if len(testFuncs) > 1 {
+        *errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
+    }
+
+    // Validate the single allowed test function
+    mainTest := testFuncs[0]
+    var hasSliceDecl, hasForLoop bool
+
+    ast.Inspect(mainTest.Body, func(n ast.Node) bool {
+        switch stmt := n.(type) {
+        case *ast.DeclStmt:
+            if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
+                for _, spec := range genDecl.Specs {
+                    if vs, ok := spec.(*ast.ValueSpec); ok {
+                        if _, ok := vs.Type.(*ast.ArrayType); ok {
+                            hasSliceDecl = true
+                        }
+                    }
+                }
+            }
+        case *ast.RangeStmt:
+            hasForLoop = true
+        }
+        return true
+    })
+
+    if !(hasSliceDecl && hasForLoop) {
+        *errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern please follow table driven approach ref:https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
+    }
 }
 
 // Rule 9 & 18 scans
