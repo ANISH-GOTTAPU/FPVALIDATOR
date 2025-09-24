@@ -13,93 +13,136 @@ import (
 )
 
 func validateGoFile(path string, errs *[]string) {
-    fs := token.NewFileSet()
-    f, err := parser.ParseFile(fs, path, nil, parser.ParseComments)
-    if err != nil {
-        *errs = append(*errs, fmt.Sprintf("%s: failed parsing", path))
-        return
-    }
+	fs := token.NewFileSet()
+	f, err := parser.ParseFile(fs, path, nil, parser.ParseComments)
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s: failed parsing", path))
+		return
+	}
 
-    for _, d := range f.Decls {
-        if fn, ok := d.(*ast.FuncDecl); ok {
-            line := fs.Position(fn.Pos()).Line
+	foundTableDriven := false
 
-            if fn.Name.IsExported() && !strings.HasPrefix(fn.Name.Name, "Test") {
-                if fn.Doc == nil {
-                    *errs = append(*errs, fmt.Sprintf("%s:%d: exported function %s must have doc comment", path, line, fn.Name.Name))
-                } else {
-                    text := strings.TrimSpace(fn.Doc.Text())
-                    if !strings.HasSuffix(text, ".") {
-                        *errs = append(*errs, fmt.Sprintf("%s:%d: function comment should end with '.'", path, line))
-                    }
-                }
-            }
+	ast.Inspect(f, func(n ast.Node) bool {
+		// Look for function declarations
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Type == nil || fn.Body == nil {
+			return true
+		}
 
-            if strings.HasPrefix(fn.Name.Name, "Get") {
-                *errs = append(*errs, fmt.Sprintf("%s:%d: function %s should not use Get prefix", path, line, fn.Name.Name))
-            }
+		// Check if it's a test function
+		if strings.HasPrefix(fn.Name.Name, "Test") {
+			var hasSliceDecl, hasForLoop bool
 
-            if strings.HasSuffix(path, "_test.go") && fn.Recv == nil && !strings.HasPrefix(fn.Name.Name, "Test") {
-                foundHelper := false
-                ast.Inspect(fn.Body, func(n ast.Node) bool {
-                    if ce, ok := n.(*ast.CallExpr); ok {
-                        if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
-                            if sel.Sel.Name == "Helper" {
-                                foundHelper = true
-                            }
-                        }
-                    }
-                    return true
-                })
-                if !foundHelper {
-                    *errs = append(*errs, fmt.Sprintf("%s:%d: test helper function %s should call t.Helper()", path, line, fn.Name.Name))
-                }
-            }
+			// Inspect function body
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch stmt := n.(type) {
+				case *ast.DeclStmt:
+					// Look for slice of structs
+					if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
+						for _, spec := range genDecl.Specs {
+							if vs, ok := spec.(*ast.ValueSpec); ok {
+								if _, ok := vs.Type.(*ast.ArrayType); ok {
+									hasSliceDecl = true
+								}
+							}
+						}
+					}
+				case *ast.RangeStmt:
+					hasForLoop = true
+				}
+				return true
+			})
 
-            if strings.HasSuffix(path, "_test.go") && fn.Recv == nil && !strings.HasPrefix(fn.Name.Name, "Test") {
-                if len(fn.Name.Name) > 0 {
-                    firstChar := fn.Name.Name[0:1]
-                    if strings.ToUpper(firstChar) == firstChar {
-                        *errs = append(*errs, fmt.Sprintf("%s:%d: test function %s must start with lowercase letter", path, line, fn.Name.Name))
-                    }
-                }
-            }
+			if hasSliceDecl && hasForLoop {
+				foundTableDriven = true
+			}
+		}
+		return true
+	})
 
-            paramErrs := checkStructParameterUsage(path, fn, fs)
-            *errs = append(*errs, paramErrs...)
-        }
-    }
+	if !foundTableDriven {
+		*errs = append(*errs, fmt.Sprintf("%s: Test is not following table-driven test pattern, please follow the recommendation https://go.dev/wiki/TableDrivenTests", path))
+	}
 
-    for _, obj := range f.Scope.Objects {
-        if strings.Contains(obj.Name, "_") {
-            pos := fs.Position(obj.Pos())
-            *errs = append(*errs, fmt.Sprintf("%s:%d: identifier %s should not contain underscores", path, pos.Line, obj.Name))
-        }
-    }
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok {
+			line := fs.Position(fn.Pos()).Line
 
-    for _, decl := range f.Decls {
-        if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.VAR {
-            for _, spec := range gd.Specs {
-                if vs, ok := spec.(*ast.ValueSpec); ok {
-                    if vs.Type != nil {
-                        typeName := fmt.Sprintf("%s", vs.Type)
-                        for _, name := range vs.Names {
-                            if strings.Contains(strings.ToLower(name.Name), strings.ToLower(typeName)) {
-                                pos := fs.Position(name.Pos())
-                                *errs = append(*errs, fmt.Sprintf("%s:%d: variable %s repeats its type %s in name", path, pos.Line, name.Name, typeName))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+			if fn.Name.IsExported() && !strings.HasPrefix(fn.Name.Name, "Test") {
+				if fn.Doc == nil {
+					*errs = append(*errs, fmt.Sprintf("%s:%d: exported function %s must have doc comment", path, line, fn.Name.Name))
+				} else {
+					text := strings.TrimSpace(fn.Doc.Text())
+					if !strings.HasSuffix(text, ".") {
+						*errs = append(*errs, fmt.Sprintf("%s:%d: function comment should end with '.'", path, line))
+					}
+				}
+			}
 
-    checkMixedCaps(path, f, errs)
-    fileErrs := scanFileForPatterns(path)
-    *errs = append(*errs, fileErrs...)
+			if strings.HasPrefix(fn.Name.Name, "Get") {
+				*errs = append(*errs, fmt.Sprintf("%s:%d: function %s should not use Get prefix", path, line, fn.Name.Name))
+			}
+
+			if strings.HasSuffix(path, "_test.go") && fn.Recv == nil && !strings.HasPrefix(fn.Name.Name, "Test") {
+				foundHelper := false
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if ce, ok := n.(*ast.CallExpr); ok {
+						if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
+							if sel.Sel.Name == "Helper" {
+								foundHelper = true
+							}
+						}
+					}
+					return true
+				})
+				if !foundHelper {
+					*errs = append(*errs, fmt.Sprintf("%s:%d: test helper function %s should call t.Helper()", path, line, fn.Name.Name))
+				}
+			}
+
+			if strings.HasSuffix(path, "_test.go") && fn.Recv == nil && !strings.HasPrefix(fn.Name.Name, "Test") {
+				if len(fn.Name.Name) > 0 {
+					firstChar := fn.Name.Name[0:1]
+					if strings.ToUpper(firstChar) == firstChar {
+						*errs = append(*errs, fmt.Sprintf("%s:%d: test function %s must start with lowercase letter", path, line, fn.Name.Name))
+					}
+				}
+			}
+
+			paramErrs := checkStructParameterUsage(path, fn, fs)
+			*errs = append(*errs, paramErrs...)
+		}
+	}
+
+	for _, obj := range f.Scope.Objects {
+		if strings.Contains(obj.Name, "_") {
+			pos := fs.Position(obj.Pos())
+			*errs = append(*errs, fmt.Sprintf("%s:%d: identifier %s should not contain underscores", path, pos.Line, obj.Name))
+		}
+	}
+
+	for _, decl := range f.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+			for _, spec := range gd.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					if vs.Type != nil {
+						typeName := fmt.Sprintf("%s", vs.Type)
+						for _, name := range vs.Names {
+							if strings.Contains(strings.ToLower(name.Name), strings.ToLower(typeName)) {
+								pos := fs.Position(name.Pos())
+								*errs = append(*errs, fmt.Sprintf("%s:%d: variable %s repeats its type %s in name", path, pos.Line, name.Name, typeName))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	checkMixedCaps(path, f, errs)
+	fileErrs := scanFileForPatterns(path)
+	*errs = append(*errs, fileErrs...)
 }
-
 
 // Rule 9 & 18 scans
 func scanFileForPatterns(path string) []string {
