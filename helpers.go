@@ -20,10 +20,9 @@ func validateGoFile(path string, errs *[]string) {
 		return
 	}
 
-	
-    if strings.HasSuffix(path, "_test.go") {
-        validateTestFileStructure(path, f, errs)
-    }
+	if strings.HasSuffix(path, "_test.go") {
+		validateTestFileStructure(path, f, errs)
+	}
 
 	for _, d := range f.Decls {
 		if fn, ok := d.(*ast.FuncDecl); ok {
@@ -44,20 +43,45 @@ func validateGoFile(path string, errs *[]string) {
 				*errs = append(*errs, fmt.Sprintf("%s:%d: function %s should not use Get prefix", path, line, fn.Name.Name))
 			}
 
-			if strings.HasSuffix(path, "_test.go") && fn.Recv == nil && !strings.HasPrefix(fn.Name.Name, "Test") {
-				foundHelper := false
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					if ce, ok := n.(*ast.CallExpr); ok {
-						if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
-							if sel.Sel.Name == "Helper" {
-								foundHelper = true
+			if strings.HasSuffix(path, "_test.go") &&
+				fn.Recv == nil &&
+				!strings.HasPrefix(fn.Name.Name, "Test") {
+
+				var tName string
+				if fn.Type.Params != nil {
+					for _, param := range fn.Type.Params.List {
+						if starExpr, ok := param.Type.(*ast.StarExpr); ok {
+							if selExpr, ok := starExpr.X.(*ast.SelectorExpr); ok {
+								if pkgIdent, ok := selExpr.X.(*ast.Ident); ok &&
+									pkgIdent.Name == "testing" &&
+									selExpr.Sel.Name == "T" {
+									if len(param.Names) > 0 {
+										tName = param.Names[0].Name
+										break
+									}
+								}
 							}
 						}
 					}
-					return true
-				})
-				if !foundHelper {
-					*errs = append(*errs, fmt.Sprintf("%s:%d: test helper function %s should call t.Helper()", path, line, fn.Name.Name))
+				}
+
+				// Step 2: If tName is found, check for t.Helper() call
+				if tName != "" {
+					foundHelper := false
+					ast.Inspect(fn.Body, func(n ast.Node) bool {
+						if ce, ok := n.(*ast.CallExpr); ok {
+							if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
+								if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == tName && sel.Sel.Name == "Helper" {
+									foundHelper = true
+								}
+							}
+						}
+						return true
+					})
+
+					if !foundHelper {
+						*errs = append(*errs, fmt.Sprintf("%s:%d: test helper function %s should call %s.Helper()", path, line, fn.Name.Name, tName))
+					}
 				}
 			}
 
@@ -106,94 +130,94 @@ func validateGoFile(path string, errs *[]string) {
 }
 
 func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
-    hasTestMain := false
-    var testFuncs []*ast.FuncDecl
+	hasTestMain := false
+	var testFuncs []*ast.FuncDecl
 
-    for _, decl := range f.Decls {
-        fn, ok := decl.(*ast.FuncDecl)
-        if !ok || fn.Type == nil || fn.Body == nil {
-            continue
-        }
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type == nil || fn.Body == nil {
+			continue
+		}
 
-        // Check for TestMain function
-        if fn.Name.Name == "TestMain" && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
-            if se, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
-                if ident, ok := se.X.(*ast.SelectorExpr); ok {
-                    if pkgIdent, ok := ident.X.(*ast.Ident); ok && pkgIdent.Name == "testing" && ident.Sel.Name == "M" {
-                        hasTestMain = true
-                    }
-                }
-            }
-            continue
-        }
+		// Check for TestMain function
+		if fn.Name.Name == "TestMain" && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
+			if se, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
+				if ident, ok := se.X.(*ast.SelectorExpr); ok {
+					if pkgIdent, ok := ident.X.(*ast.Ident); ok && pkgIdent.Name == "testing" && ident.Sel.Name == "M" {
+						hasTestMain = true
+					}
+				}
+			}
+			continue
+		}
 
-        // Collect test functions
-        if strings.HasPrefix(fn.Name.Name, "Test") {
-            testFuncs = append(testFuncs, fn)
-        }
-    }
+		// Collect test functions
+		if strings.HasPrefix(fn.Name.Name, "Test") {
+			testFuncs = append(testFuncs, fn)
+		}
+	}
 
-    if !hasTestMain {
-        *errs = append(*errs, fmt.Sprintf("%s: missing TestMain function", path))
-    }
+	if !hasTestMain {
+		*errs = append(*errs, fmt.Sprintf("%s: missing TestMain function", path))
+	}
 
-    if len(testFuncs) == 0 {
-        *errs = append(*errs, fmt.Sprintf("%s: no test functions found", path))
-        return
-    }
+	if len(testFuncs) == 0 {
+		*errs = append(*errs, fmt.Sprintf("%s: no test functions found", path))
+		return
+	}
 
-    if len(testFuncs) > 1 {
-        *errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table-driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
-    }
+	if len(testFuncs) > 1 {
+		*errs = append(*errs, fmt.Sprintf("%s: multiple top-level test functions found; please follow table-driven approach ref: https://go.dev/wiki/TableDrivenTests", path))
+	}
 
-    // Validate the single allowed test function
-    mainTest := testFuncs[0]
-    var hasSliceDecl, hasForLoop bool
+	// Validate the single allowed test function
+	mainTest := testFuncs[0]
+	var hasSliceDecl, hasForLoop bool
 
-    ast.Inspect(mainTest.Body, func(n ast.Node) bool {
-        switch stmt := n.(type) {
-        case *ast.DeclStmt:
-            if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
-                for _, spec := range genDecl.Specs {
-                    if vs, ok := spec.(*ast.ValueSpec); ok {
-                        // Case 1: Explicit slice type
-                        if _, ok := vs.Type.(*ast.ArrayType); ok {
-                            hasSliceDecl = true
-                        }
+	ast.Inspect(mainTest.Body, func(n ast.Node) bool {
+		switch stmt := n.(type) {
+		case *ast.DeclStmt:
+			if genDecl, ok := stmt.Decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if vs, ok := spec.(*ast.ValueSpec); ok {
+						// Case 1: Explicit slice type
+						if _, ok := vs.Type.(*ast.ArrayType); ok {
+							hasSliceDecl = true
+						}
 
-                        // Case 2: Inferred slice type via composite literal
-                        if vs.Type == nil {
-                            for _, val := range vs.Values {
-                                if cl, ok := val.(*ast.CompositeLit); ok {
-                                    switch cl.Type.(type) {
-                                    case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
-                                        hasSliceDecl = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        case *ast.AssignStmt:
-            // Handle inferred slice via := assignment
-            for _, rhs := range stmt.Rhs {
-                if cl, ok := rhs.(*ast.CompositeLit); ok {
-                    switch cl.Type.(type) {
-                    case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
-                        hasSliceDecl = true
-                    }
-                }
-            }
-        case *ast.RangeStmt:
-            hasForLoop = true
-        }
-        return true
-    })
+						// Case 2: Inferred slice type via composite literal
+						if vs.Type == nil {
+							for _, val := range vs.Values {
+								if cl, ok := val.(*ast.CompositeLit); ok {
+									switch cl.Type.(type) {
+									case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
+										hasSliceDecl = true
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			// Handle inferred slice via := assignment
+			for _, rhs := range stmt.Rhs {
+				if cl, ok := rhs.(*ast.CompositeLit); ok {
+					switch cl.Type.(type) {
+					case *ast.ArrayType, *ast.Ident, *ast.SelectorExpr:
+						hasSliceDecl = true
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			hasForLoop = true
+		}
+		return true
+	})
 
-    if !(hasSliceDecl && hasForLoop) {
-        *errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern. Please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
-    }
+	if !(hasSliceDecl && hasForLoop) {
+		*errs = append(*errs, fmt.Sprintf("%s: test function %s does not follow table-driven test pattern. Please follow table driven approach ref: https://go.dev/wiki/TableDrivenTests", path, mainTest.Name.Name))
+	}
 }
 
 // Rule 9 & 18 scans
