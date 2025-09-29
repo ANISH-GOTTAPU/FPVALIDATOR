@@ -30,11 +30,18 @@ func validateGoFile(path string, errs *[]string) {
 
 			if fn.Name.IsExported() && !strings.HasPrefix(fn.Name.Name, "Test") {
 				if fn.Doc == nil {
-					*errs = append(*errs, fmt.Sprintf("%s:%d: exported function %s must have doc comment", path, line, fn.Name.Name))
+					*errs = append(*errs, fmt.Sprintf("%s:%d: exported function %q must have doc comment", path, line, fn.Name.Name))
 				} else {
 					text := strings.TrimSpace(fn.Doc.Text())
+
+					// Check if comment ends with a period
 					if !strings.HasSuffix(text, ".") {
 						*errs = append(*errs, fmt.Sprintf("%s:%d: function comment should end with '.'", path, line))
+					}
+
+					// Check if comment starts with exact function name (case-sensitive)
+					if !strings.HasPrefix(text, fn.Name.Name) {
+						*errs = append(*errs, fmt.Sprintf("%s:%d: doc comment for function %q should start with the function name(check for case sensitive)", path, line, fn.Name.Name))
 					}
 				}
 			}
@@ -124,9 +131,85 @@ func validateGoFile(path string, errs *[]string) {
 		}
 	}
 
-	checkMixedCaps(path, f, errs)
+	if strings.HasSuffix(path, "_test.go") {
+		validateMustUsage(path, fs, f, errs)
+	}
+	validateNestedAnonymousFuncs(path, fs, f, errs)
+	checkMixedCaps(path, fs, f, errs)
 	fileErrs := scanFileForPatterns(path)
 	*errs = append(*errs, fileErrs...)
+}
+
+func validateNestedAnonymousFuncs(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		callExpr, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+
+		for _, arg := range callExpr.Args {
+			if funcLit, ok := arg.(*ast.FuncLit); ok {
+				pos := fs.Position(funcLit.Pos())
+				*errs = append(*errs, fmt.Sprintf("%s:%d: avoid nesting anonymous function inside call; defining the watch function seperately to improve the readability.", path, pos.Line))
+			}
+		}
+
+		return true
+	})
+}
+
+func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
+
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		funcName := fn.Name.Name
+		line := fs.Position(fn.Pos()).Line
+		usesMust := false
+		usesFatalErr := false
+
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			// Detect mustXYZ usage
+			if callExpr, ok := n.(*ast.CallExpr); ok {
+				if ident, ok := callExpr.Fun.(*ast.Ident); ok {
+					if strings.HasPrefix(ident.Name, "must") || strings.HasPrefix(ident.Name, "Must") {
+						usesMust = true
+					}
+				}
+			}
+
+			// Detect if err != nil followed by t.Fatalf
+			if ifStmt, ok := n.(*ast.IfStmt); ok {
+				if cond, ok := ifStmt.Cond.(*ast.BinaryExpr); ok {
+					if ident, ok := cond.X.(*ast.Ident); ok && ident.Name == "err" {
+						if cond.Op == token.NEQ {
+							// Check if body contains t.Fatalf
+							ast.Inspect(ifStmt.Body, func(n ast.Node) bool {
+								if callExpr, ok := n.(*ast.CallExpr); ok {
+									if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
+										if xIdent, ok := sel.X.(*ast.Ident); ok && xIdent.Name == "t" && sel.Sel.Name == "Fatalf" {
+											usesFatalErr = true
+										}
+									}
+								}
+								return true
+							})
+						}
+					}
+				}
+			}
+
+			return true
+		})
+
+		if usesFatalErr && !usesMust {
+			*errs = append(*errs, fmt.Sprintf("%s:%d: function %s should start with mustXYZ", path, line, funcName))
+		}
+	}
 }
 
 func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
@@ -431,8 +514,7 @@ var (
 	badAcronyms         = regexp.MustCompile(`Id|Url|Http`) // common violations
 )
 
-func checkMixedCaps(path string, f *ast.File, errs *[]string) {
-	var fset = token.NewFileSet()
+func checkMixedCaps(path string, fset *token.FileSet, f *ast.File, errs *[]string) {
 	for _, decl := range f.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			name := fn.Name.Name
@@ -477,6 +559,12 @@ func checkMixedCaps(path string, f *ast.File, errs *[]string) {
 						if ident.IsExported() {
 							if !exportedMixedCaps.MatchString(name) {
 								*errs = append(*errs, fmt.Sprintf("%s:%d: exported var name %q should use MixedCaps", path, fset.Position(ident.Pos()).Line, name))
+							}
+							if vs.Doc != nil {
+								docText := strings.TrimSpace(vs.Doc.Text())
+								if !strings.HasPrefix(docText, name) {
+									*errs = append(*errs, fmt.Sprintf("%s:%d: doc comment for exported variable %q should start with the exact variable name (case-sensitive)", path, fset.Position(ident.Pos()).Line, name))
+								}
 							}
 						}
 						if badAcronyms.MatchString(name) {
