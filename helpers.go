@@ -46,6 +46,23 @@ func validateGoFile(path string, errs *[]string) {
 				}
 			}
 
+			// Check for assertion-like behavior in non-TestXXX helpers
+			if !strings.HasPrefix(fn.Name.Name, "Test") {
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if callExpr, ok := n.(*ast.CallExpr); ok {
+						if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
+							if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "t" {
+								switch sel.Sel.Name {
+								case "Error", "Errorf":
+									*errs = append(*errs, fmt.Sprintf("%s:%d: helper function %q should not call t.%s directly; return error instead", path, line, fn.Name.Name, sel.Sel.Name))
+								}
+							}
+						}
+					}
+					return true
+				})
+			}
+
 			if strings.HasPrefix(fn.Name.Name, "Get") {
 				*errs = append(*errs, fmt.Sprintf("%s:%d: function %s should not use Get prefix", path, line, fn.Name.Name))
 			}
@@ -160,7 +177,6 @@ func validateNestedAnonymousFuncs(path string, fs *token.FileSet, f *ast.File, e
 }
 
 func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
-
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -168,6 +184,11 @@ func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]stri
 		}
 
 		funcName := fn.Name.Name
+		if strings.HasPrefix(funcName, "must") || strings.HasPrefix(funcName, "Must") {
+			// Function already starts with mustXYZ, skip validation
+			continue
+		}
+
 		line := fs.Position(fn.Pos()).Line
 		usesMust := false
 		usesFatalErr := false
