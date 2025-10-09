@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 func validateGoFile(path string, errs *[]string) {
@@ -19,6 +20,10 @@ func validateGoFile(path string, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf("%s: failed parsing", path))
 		return
 	}
+
+	validateMixedCaps(path, fs, f, errs)
+
+	validateAcronyms(path, fs, f, errs)
 
 	if strings.HasSuffix(path, "_test.go") {
 		validateTestFileStructure(path, f, errs)
@@ -231,6 +236,93 @@ func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]stri
 			*errs = append(*errs, fmt.Sprintf("%s:%d: function %s should start with mustXYZ", path, line, funcName))
 		}
 	}
+}
+
+func validateAcronyms(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
+	
+    // Define a list of known acronyms
+    acronyms := []string{"DUT", "IP", "MAC", "ATE", "IPv4", "IPv6"}
+
+    acronymMap := make(map[string]string)
+    for _, a := range acronyms {
+        acronymMap[strings.ToLower(a)] = a
+    }
+
+    ast.Inspect(f, func(n ast.Node) bool {
+        if ident, ok := n.(*ast.Ident); ok {
+            name := ident.Name
+
+            // Skip if all lowercase or all uppercase
+            if name == strings.ToLower(name) || name == strings.ToUpper(name) {
+                return true
+            }
+
+            // Split into camel case parts
+            parts := splitCamelCase(name)
+
+            // Only check if there are multiple parts
+            if len(parts) < 2 {
+                return true
+            }
+
+            for i, part := range parts {
+                lower := strings.ToLower(part)
+                if correct, exists := acronymMap[lower]; exists && part != correct {
+                    // Allow acronym if it's the first part and lowercase (e.g., dutPorts)
+                    if i == 0 && part == lower {
+                        continue
+                    }
+                    pos := fs.Position(ident.Pos())
+                    *errs = append(*errs, fmt.Sprintf(
+                        "%s:%d: improper acronym casing in identifier '%s', should use '%s' instead of '%s'",
+                        path, pos.Line, name, correct, part))
+                }
+            }
+        }
+        return true
+    })
+}
+
+// splitCamelCase splits a camelCase or PascalCase string into its components.
+func splitCamelCase(s string) []string {
+    var parts []string
+    runes := []rune(s)
+    start := 0
+    for i := 1; i < len(runes); i++ {
+        if unicode.IsUpper(runes[i]) && (i+1 < len(runes) && unicode.IsLower(runes[i+1])) {
+            parts = append(parts, string(runes[start:i]))
+            start = i
+        }
+    }
+    parts = append(parts, string(runes[start:]))
+    return parts
+}
+
+
+func validateMixedCaps(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
+    // Regex: starts with lowercase, contains at least one uppercase letter
+    mixedCapsRegex := regexp.MustCompile(`^[a-z]+[A-Z][A-Za-z0-9]*$`)
+
+    ast.Inspect(f, func(n ast.Node) bool {
+        decl, ok := n.(*ast.GenDecl)
+        if !ok || decl.Tok != token.VAR {
+            return true
+        }
+
+        for _, spec := range decl.Specs {
+            valueSpec, ok := spec.(*ast.ValueSpec)
+            if !ok {
+                continue
+            }
+            for _, name := range valueSpec.Names {
+                if !mixedCapsRegex.MatchString(name.Name) {
+                    pos := fs.Position(name.Pos())
+                    *errs = append(*errs, fmt.Sprintf("%s:%d: variable '%s' does not follow MixedCaps (e.g., otgAgg1)", path, pos.Line, name.Name))
+                }
+            }
+        }
+        return true
+    })
 }
 
 func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
