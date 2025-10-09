@@ -241,7 +241,7 @@ func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]stri
 func validateAcronyms(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
 	
     // Define a list of known acronyms
-    acronyms := []string{"DUT", "IP", "MAC", "ATE", "IPv4", "IPv6"}
+    acronyms := []string{"DUT", "IP", "MAC", "ATE", "IPv4", "IPv6", "OTG"}
 
     acronymMap := make(map[string]string)
     for _, a := range acronyms {
