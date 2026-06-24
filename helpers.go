@@ -160,6 +160,22 @@ func validateGoFile(path string, errs *[]string) {
 	checkMixedCaps(path, fs, f, errs)
 	fileErrs := scanFileForPatterns(path)
 	*errs = append(*errs, fileErrs...)
+
+	validateCommentedCode(path, errs)
+	validateUnusedParameters(path, errs)
+	validateErrorsNewUsage(path, errs)
+	validateUnusedStructFields(path, errs)
+	validateHardcodedTimeout(path, errs)
+	validateMixedGNMIBatchUsage(path, errs)
+	validateHardcodedSubinterfaceIndex(path, errs)
+	validateDeviationUsage(path, errs)
+	validateFunctionCommentMatch(path, errs)
+	validateVendorCheckInDeviation(path, errs)
+	validateLogInsteadOfError(path, errs)
+	validateContextUsage(path, errs)
+	validateDeviationComment(path, errs)
+	validateConfigurePoliciesSignature(path, errs)
+	validateMagicNumbers(path, errs)
 }
 
 func validateNestedAnonymousFuncs(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
@@ -239,90 +255,89 @@ func validateMustUsage(path string, fs *token.FileSet, f *ast.File, errs *[]stri
 }
 
 func validateAcronyms(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
-	
-    // Define a list of known acronyms
-    acronyms := []string{"DUT", "IP", "MAC", "ATE", "IPv4", "IPv6", "OTG"}
 
-    acronymMap := make(map[string]string)
-    for _, a := range acronyms {
-        acronymMap[strings.ToLower(a)] = a
-    }
+	// Define a list of known acronyms
+	acronyms := []string{"DUT", "IP", "MAC", "ATE", "IPv4", "IPv6", "OTG"}
 
-    ast.Inspect(f, func(n ast.Node) bool {
-        if ident, ok := n.(*ast.Ident); ok {
-            name := ident.Name
+	acronymMap := make(map[string]string)
+	for _, a := range acronyms {
+		acronymMap[strings.ToLower(a)] = a
+	}
 
-            // Skip if all lowercase or all uppercase
-            if name == strings.ToLower(name) || name == strings.ToUpper(name) {
-                return true
-            }
+	ast.Inspect(f, func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok {
+			name := ident.Name
 
-            // Split into camel case parts
-            parts := splitCamelCase(name)
+			// Skip if all lowercase or all uppercase
+			if name == strings.ToLower(name) || name == strings.ToUpper(name) {
+				return true
+			}
 
-            // Only check if there are multiple parts
-            if len(parts) < 2 {
-                return true
-            }
+			// Split into camel case parts
+			parts := splitCamelCase(name)
 
-            for i, part := range parts {
-                lower := strings.ToLower(part)
-                if correct, exists := acronymMap[lower]; exists && part != correct {
-                    // Allow acronym if it's the first part and lowercase (e.g., dutPorts)
-                    if i == 0 && part == lower {
-                        continue
-                    }
-                    pos := fs.Position(ident.Pos())
-                    *errs = append(*errs, fmt.Sprintf(
-                        "%s:%d: improper acronym casing in identifier '%s', should use '%s' instead of '%s'",
-                        path, pos.Line, name, correct, part))
-                }
-            }
-        }
-        return true
-    })
+			// Only check if there are multiple parts
+			if len(parts) < 2 {
+				return true
+			}
+
+			for i, part := range parts {
+				lower := strings.ToLower(part)
+				if correct, exists := acronymMap[lower]; exists && part != correct {
+					// Allow acronym if it's the first part and lowercase (e.g., dutPorts)
+					if i == 0 && part == lower {
+						continue
+					}
+					pos := fs.Position(ident.Pos())
+					*errs = append(*errs, fmt.Sprintf(
+						"%s:%d: improper acronym casing in identifier '%s', should use '%s' instead of '%s'",
+						path, pos.Line, name, correct, part))
+				}
+			}
+		}
+		return true
+	})
 }
 
 // splitCamelCase splits a camelCase or PascalCase string into its components.
 func splitCamelCase(s string) []string {
-    var parts []string
-    runes := []rune(s)
-    start := 0
-    for i := 1; i < len(runes); i++ {
-        if unicode.IsUpper(runes[i]) && (i+1 < len(runes) && unicode.IsLower(runes[i+1])) {
-            parts = append(parts, string(runes[start:i]))
-            start = i
-        }
-    }
-    parts = append(parts, string(runes[start:]))
-    return parts
+	var parts []string
+	runes := []rune(s)
+	start := 0
+	for i := 1; i < len(runes); i++ {
+		if unicode.IsUpper(runes[i]) && (i+1 < len(runes) && unicode.IsLower(runes[i+1])) {
+			parts = append(parts, string(runes[start:i]))
+			start = i
+		}
+	}
+	parts = append(parts, string(runes[start:]))
+	return parts
 }
 
-
 func validateMixedCaps(path string, fs *token.FileSet, f *ast.File, errs *[]string) {
-    // Regex: starts with lowercase, contains at least one uppercase letter
-    mixedCapsRegex := regexp.MustCompile(`^[a-z]+[A-Z][A-Za-z0-9]*$`)
+	// Regex: starts with lowercase, contains at least one uppercase letter
+	mixedCapsRegex := regexp.MustCompile(`^[a-z]+[A-Z][A-Za-z0-9]*$`)
 
-    ast.Inspect(f, func(n ast.Node) bool {
-        decl, ok := n.(*ast.GenDecl)
-        if !ok || decl.Tok != token.VAR {
-            return true
-        }
+	ast.Inspect(f, func(n ast.Node) bool {
+		decl, ok := n.(*ast.GenDecl)
+		if !ok || decl.Tok != token.VAR {
+			return true
+		}
 
-        for _, spec := range decl.Specs {
-            valueSpec, ok := spec.(*ast.ValueSpec)
-            if !ok {
-                continue
-            }
-            for _, name := range valueSpec.Names {
-                if !mixedCapsRegex.MatchString(name.Name) {
-                    pos := fs.Position(name.Pos())
-                    *errs = append(*errs, fmt.Sprintf("%s:%d: variable '%s' does not follow MixedCaps (e.g., otgAgg1)", path, pos.Line, name.Name))
-                }
-            }
-        }
-        return true
-    })
+		for _, spec := range decl.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range valueSpec.Names {
+				if !mixedCapsRegex.MatchString(name.Name) {
+					pos := fs.Position(name.Pos())
+					*errs = append(*errs, fmt.Sprintf("%s:%d: variable '%s' does not follow MixedCaps (e.g., otgAgg1)", path, pos.Line, name.Name))
+				}
+			}
+		}
+		return true
+	})
 }
 
 func validateTestFileStructure(path string, f *ast.File, errs *[]string) {
@@ -688,4 +703,1454 @@ func checkMixedCaps(path string, fset *token.FileSet, f *ast.File, errs *[]strin
 			}
 		}
 	}
+}
+
+func validateCommentedCode(root string, errs *[]string) error {
+	var codeLikeCommentRE = regexp.MustCompile(
+		`^\s*//\s*(` +
+			// Control flow.
+			`if\b|else\b|switch\b|case\b|default\b|select\b|` +
+			`for\b|range\b|go\b|defer\b|` +
+			`return\b|break\b|continue\b|goto\b|fallthrough\b|` +
+
+			// Declarations.
+			`func\b|type\b|struct\b|interface\b|const\b|var\b|` +
+
+			// Built-ins.
+			`append\(|make\(|new\(|copy\(|delete\(|close\(|panic\(|recover\(|` +
+
+			// Assignment.
+			`[A-Za-z_][A-Za-z0-9_]*\s*:=|` +
+			`[A-Za-z_][A-Za-z0-9_]*\s*=|` +
+
+			// Generic method call.
+			`[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\(|` +
+
+			// Generic function call.
+			`[A-Za-z_][A-Za-z0-9_]*\(|` +
+
+			// Composite literal.
+			`&?[A-Za-z_][A-Za-z0-9_]*\{|` +
+
+			// nil.
+			`nil\b` +
+			`)`,
+	)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		lineNo := 0
+
+		for scanner.Scan() {
+			lineNo++
+			line := scanner.Text()
+
+			if codeLikeCommentRE.MatchString(line) {
+				*errs = append(*errs, fmt.Sprintf("%s:%d: commented-out code detected: %s", path, lineNo, strings.TrimSpace(line)))
+			}
+		}
+
+		return scanner.Err()
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateUnusedParameters(root string, errs *[]string) error {
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Type.Params == nil {
+				continue
+			}
+
+			// Collect parameter names.
+			params := map[string]token.Pos{}
+			for _, field := range fn.Type.Params.List {
+				for _, name := range field.Names {
+					if name.Name == "_" {
+						continue
+					}
+					params[name.Name] = name.Pos()
+				}
+			}
+
+			if len(params) == 0 {
+				continue
+			}
+
+			// Track parameter usage inside the function body.
+			used := make(map[string]bool)
+
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if _, ok := params[id.Name]; ok {
+					used[id.Name] = true
+				}
+				return true
+			})
+
+			for param := range params {
+				if !used[param] {
+					pos := fset.Position(params[param])
+					*errs = append(*errs, fmt.Sprintf("%s:%d: parameter %q is declared but never used in function %q", pos.Filename, pos.Line, param, fn.Name.Name))
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateErrorsNewUsage(root string, errs *[]string) error {
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+
+			if pkg.Name == "errors" && sel.Sel.Name == "New" {
+				pos := fset.Position(call.Pos())
+				*errs = append(*errs, fmt.Sprintf("%s:%d: use fmt.Errorf instead of errors.New", pos.Filename, pos.Line))
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateUnusedStructFields(root string, errs *[]string) error {
+	type fieldInfo struct {
+		File string
+		Line int
+		Name string
+	}
+
+	fields := make(map[string]fieldInfo)
+	used := make(map[string]bool)
+
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		// Collect every struct field.
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+
+			for _, f := range st.Fields.List {
+				for _, name := range f.Names {
+					pos := fset.Position(name.Pos())
+					key := ts.Name.Name + "." + name.Name
+
+					fields[key] = fieldInfo{
+						File: pos.Filename,
+						Line: pos.Line,
+						Name: key,
+					}
+				}
+			}
+			return true
+		})
+
+		// Mark fields initialized in composite literals.
+		ast.Inspect(file, func(n ast.Node) bool {
+			cl, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+
+			ident, ok := cl.Type.(*ast.Ident)
+			if !ok {
+				return true
+			}
+
+			for _, elt := range cl.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+
+				keyIdent, ok := kv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+
+				key := ident.Name + "." + keyIdent.Name
+				used[key] = true
+			}
+
+			return true
+		})
+
+		// Mark fields accessed using selectors.
+		ast.Inspect(file, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			for key := range fields {
+				if strings.HasSuffix(key, "."+sel.Sel.Name) {
+					used[key] = true
+				}
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	for key, f := range fields {
+		if !used[key] {
+			*errs = append(*errs, fmt.Sprintf("%s:%d: struct field %q is never used", f.File, f.Line, key))
+		}
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateHardcodedTimeout(root string, errs *[]string) error {
+	fset := token.NewFileSet()
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			for _, arg := range call.Args {
+				if isHardcodedDuration(arg) {
+					pos := fset.Position(arg.Pos())
+					*errs = append(*errs,
+						fmt.Sprintf("%s:%d: hardcoded timeout detected, use a named constant instead", pos.Filename, pos.Line))
+				}
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func isHardcodedDuration(expr ast.Expr) bool {
+	switch e := expr.(type) {
+
+	// 10*time.Minute
+	// 5*time.Second
+	// 2*time.Hour
+	case *ast.BinaryExpr:
+		if e.Op != token.MUL {
+			return false
+		}
+
+		_, leftIsNum := e.X.(*ast.BasicLit)
+
+		sel, rightIsSelector := e.Y.(*ast.SelectorExpr)
+		if !leftIsNum || !rightIsSelector {
+			return false
+		}
+
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "time" {
+			return false
+		}
+
+		switch sel.Sel.Name {
+		case "Nanosecond",
+			"Microsecond",
+			"Millisecond",
+			"Second",
+			"Minute",
+			"Hour":
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateMixedGNMIBatchUsage(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+
+			var (
+				hasBatch     bool
+				hasImmediate bool
+			)
+
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+
+				switch pkg.Name {
+
+				// gNMI APIs
+				case "gnmi":
+					switch sel.Sel.Name {
+
+					// Batched APIs
+					case "BatchUpdate",
+						"BatchReplace",
+						"BatchDelete":
+						hasBatch = true
+
+					// Immediate APIs
+					case "Update",
+						"Replace",
+						"Delete",
+						"Set":
+						hasImmediate = true
+					}
+
+				}
+
+				return true
+			})
+
+			if hasBatch && hasImmediate {
+				pos := fset.Position(fn.Pos())
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: function %q mixes batched and immediate gNMI operations; use a single SetBatch for consistency",
+						pos.Filename, pos.Line, fn.Name.Name))
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateHardcodedSubinterfaceIndex(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			var funcName string
+
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				funcName = fun.Sel.Name
+
+			case *ast.Ident:
+				funcName = fun.Name
+
+			default:
+				return true
+			}
+
+			switch funcName {
+			case "GetOrCreateSubinterface",
+				"Subinterface",
+				"NewOCSubInterface",
+				"AssignToNetworkInstance":
+
+				for _, arg := range call.Args {
+					lit, ok := arg.(*ast.BasicLit)
+					if !ok || lit.Kind != token.INT {
+						continue
+					}
+
+					pos := fset.Position(arg.Pos())
+
+					*errs = append(*errs,
+						fmt.Sprintf(
+							"%s:%d: hardcoded subinterface index %s passed to %s(); use the subinterface ID from attrs instead",
+							pos.Filename, pos.Line, lit.Value, funcName))
+				}
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateDeviationUsage(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		// Skip cfgplugins package completely.
+		if file.Name != nil && file.Name.Name == "cfgplugins" {
+			return nil
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok || pkg.Name != "deviations" {
+				return true
+			}
+
+			pos := fset.Position(call.Pos())
+
+			*errs = append(*errs,
+				fmt.Sprintf(
+					"%s:%d: direct use of deviations.%s() detected; move this logic into cfgplugins to maintain test abstraction",
+					pos.Filename,
+					pos.Line,
+					sel.Sel.Name,
+				),
+			)
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateFunctionCommentMatch(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+
+			// Ignore init().
+			if fn.Name.Name == "init" {
+				continue
+			}
+
+			// Skip functions without documentation comments.
+			if fn.Doc == nil || len(fn.Doc.List) == 0 {
+				continue
+			}
+
+			// First comment line.
+			comment := fn.Doc.List[0].Text
+
+			switch {
+			case strings.HasPrefix(comment, "//"):
+				comment = strings.TrimSpace(strings.TrimPrefix(comment, "//"))
+			case strings.HasPrefix(comment, "/*"):
+				comment = strings.TrimSpace(strings.TrimPrefix(comment, "/*"))
+				comment = strings.TrimSuffix(comment, "*/")
+			}
+
+			if comment == "" {
+				continue
+			}
+
+			fields := strings.Fields(comment)
+			if len(fields) == 0 {
+				continue
+			}
+
+			firstWord := fields[0]
+
+			// Exact match (case-sensitive).
+			if firstWord != fn.Name.Name {
+				pos := fset.Position(fn.Pos())
+
+				*errs = append(*errs,
+					fmt.Sprintf(
+						"%s:%d: function comment should start with %q but starts with %q",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name,
+						firstWord,
+					))
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateVendorCheckInDeviation(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		type blockRange struct {
+			start token.Pos
+			end   token.Pos
+		}
+
+		var deviationBlocks []blockRange
+
+		// ------------------------------------------------------------------
+		// Pass 1: Collect all "if deviations.Xxx(...)" block ranges.
+		// ------------------------------------------------------------------
+		ast.Inspect(file, func(n ast.Node) bool {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+
+			call, ok := ifStmt.Cond.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || id.Name != "deviations" {
+				return true
+			}
+
+			deviationBlocks = append(deviationBlocks, blockRange{
+				start: ifStmt.Body.Pos(),
+				end:   ifStmt.Body.End(),
+			})
+
+			return true
+		})
+
+		// ------------------------------------------------------------------
+		// Pass 2: Find dut.Vendor() usages.
+		// ------------------------------------------------------------------
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Vendor" {
+				return true
+			}
+
+			// Match only *.Vendor()
+			if _, ok := sel.X.(*ast.Ident); !ok {
+				// Handles dut.Vendor()
+			} else {
+				// also acceptable
+			}
+
+			insideDeviation := false
+			for _, b := range deviationBlocks {
+				if call.Pos() >= b.start && call.Pos() <= b.end {
+					insideDeviation = true
+					break
+				}
+			}
+
+			if insideDeviation {
+				return true
+			}
+
+			pos := fset.Position(call.Pos())
+			*errs = append(*errs,
+				fmt.Sprintf("%s:%d: direct dut.Vendor() usage should be moved into a deviation",
+					pos.Filename, pos.Line))
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateLogInsteadOfError(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+
+			// Only consider comparison conditions.
+			switch cond := ifStmt.Cond.(type) {
+			case *ast.BinaryExpr:
+				switch cond.Op {
+				case token.NEQ,
+					token.EQL,
+					token.GTR,
+					token.LSS,
+					token.GEQ,
+					token.LEQ:
+				default:
+					return true
+				}
+			default:
+				return true
+			}
+
+			if len(ifStmt.Body.List) != 1 {
+				return true
+			}
+
+			exprStmt, ok := ifStmt.Body.List[0].(*ast.ExprStmt)
+			if !ok {
+				return true
+			}
+
+			call, ok := exprStmt.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || id.Name != "t" {
+				return true
+			}
+
+			switch sel.Sel.Name {
+			case "Log", "Logf", "Logln":
+				pos := fset.Position(call.Pos())
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: validation failure uses %s(); consider using t.Errorf() instead",
+						pos.Filename,
+						pos.Line,
+						sel.Sel.Name))
+			}
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateContextUsage(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+
+			// Match: t.Context()
+			if sel.Sel.Name != "Context" {
+				return true
+			}
+
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || id.Name != "t" {
+				return true
+			}
+
+			pos := fset.Position(call.Pos())
+			*errs = append(*errs,
+				fmt.Sprintf("%s:%d: avoid using t.Context(); use context.Background() or pass a context for Go 1.22/1.23 compatibility",
+					pos.Filename,
+					pos.Line))
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateDeviationComment(root string, errs *[]string) error {
+	issueTrackerRE := regexp.MustCompile(`https://(issuetracker\.google\.com/\d+|partnerissuetracker\.corp\.google\.com/.*/issues/\d+)`)
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+
+			// Only validate deviation accessor functions.
+			if !strings.HasSuffix(fn.Name.Name, "Unsupported") {
+				continue
+			}
+
+			pos := fset.Position(fn.Pos())
+
+			if fn.Doc == nil {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: deviation function %q is missing a documentation comment",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+				continue
+			}
+
+			comment := fn.Doc.Text()
+
+			// ------------------------------------------------------------------
+			// Check issue tracker.
+			// ------------------------------------------------------------------
+			if !issueTrackerRE.MatchString(comment) {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: deviation comment for %q is missing a \"Tracked at: https://issuetracker.google.com/<id>\" line",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+			}
+
+			// ------------------------------------------------------------------
+			// Check incorrect OC path.
+			// ------------------------------------------------------------------
+			if strings.Contains(comment, "global-filter-policy") {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: deviation comment for %q contains incorrect path \"global-filter-policy\"; use \"global-filter\"",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+			}
+
+			// ------------------------------------------------------------------
+			// First comment line should start with function name.
+			// ------------------------------------------------------------------
+			first := ""
+			if len(fn.Doc.List) > 0 {
+				first = strings.TrimSpace(strings.TrimPrefix(fn.Doc.List[0].Text, "//"))
+			}
+
+			if !strings.HasPrefix(first, fn.Name.Name+" ") &&
+				first != fn.Name.Name {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: first comment line should start with %q",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
+}
+
+func validateConfigurePoliciesSignature(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		funcMap := collectFunctionInfo(file)
+
+		validateFunctionSignatures(fset, funcMap, errs)
+		validateHelperCalls(file, fset, funcMap, errs)
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+	return nil
+}
+
+type functionInfo struct {
+	Name        string
+	HasTestingT bool
+	ParamCount  int
+	Decl        *ast.FuncDecl
+	IsMethod    bool
+}
+
+// collectFunctionInfo collects metadata for all local functions in a Go file.
+func collectFunctionInfo(file *ast.File) map[string]functionInfo {
+	funcs := make(map[string]functionInfo)
+
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+
+		info := functionInfo{
+			Name: fn.Name.Name,
+			Decl: fn,
+		}
+
+		if fn.Type.Params != nil {
+			info.ParamCount = len(fn.Type.Params.List)
+		}
+
+		info.HasTestingT = functionHasTestingT(fn)
+		info.IsMethod = fn.Recv != nil
+		funcs[fn.Name.Name] = info
+	}
+
+	return funcs
+}
+
+// functionHasTestingT reports whether the first parameter of fn is
+// t *testing.T.
+func functionHasTestingT(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+		return false
+	}
+
+	param := fn.Type.Params.List[0]
+
+	if len(param.Names) == 0 || param.Names[0].Name != "t" {
+		return false
+	}
+
+	star, ok := param.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+
+	return pkg.Name == "testing" && sel.Sel.Name == "T"
+}
+
+// validateFunctionSignatures validates that helper functions accepting
+// *testing.T declare it as the first parameter named "t".
+func validateFunctionSignatures(
+	fset *token.FileSet,
+	funcs map[string]functionInfo,
+	errs *[]string,
+) {
+	for _, info := range funcs {
+		fn := info.Decl
+		if fn == nil || fn.Name.Name == "TestMain" {
+			continue
+		}
+
+		// Skip methods.
+		if fn.Recv != nil {
+			continue
+		}
+
+		// Skip functions without parameters.
+		if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+			continue
+		}
+
+		if info.HasTestingT {
+			if !hasTParameter(fn) {
+				pos := fset.Position(fn.Pos())
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: function %q should have a parameter named t of type *testing.T",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+			}
+		} else {
+			if !hasTParameter(fn) {
+				pos := fset.Position(fn.Pos())
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: function %q should have a parameter named t",
+						pos.Filename,
+						pos.Line,
+						fn.Name.Name))
+			}
+		}
+	}
+}
+
+// hasTParameter returns true if the function has a parameter named "t".
+// If requireTestingT is true, the parameter must be of type *testing.T.
+func hasTParameter(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Type == nil || fn.Type.Params == nil {
+		return false
+	}
+
+	for _, field := range fn.Type.Params.List {
+		star, ok := field.Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+
+		sel, ok := star.X.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if pkg.Name == "testing" && sel.Sel.Name == "T" {
+			// Verify one of the parameter names is "t".
+			for _, name := range field.Names {
+				if name.Name == "t" {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// validateHelperCalls validates that local helper functions expecting
+// t *testing.T are always invoked with t as their first argument.
+func validateHelperCalls(
+	file *ast.File,
+	fset *token.FileSet,
+	funcs map[string]functionInfo,
+	errs *[]string,
+) {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			ident, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				// Skip selector expressions:
+				// gnmi.Replace(...)
+				// t.Helper(...)
+				// fmt.Sprintf(...)
+				return true
+			}
+
+			callee, ok := funcs[ident.Name]
+			if !ok {
+				return true
+			}
+
+			if callee.IsMethod || !callee.HasTestingT {
+				return true
+			}
+
+			// Find where t *testing.T appears in the callee signature.
+			tIndex := -1
+			paramIndex := 0
+
+			if callee.Decl.Type.Params != nil {
+				for _, field := range callee.Decl.Type.Params.List {
+					for range field.Names {
+						if isTestingTType(field.Type) {
+							tIndex = paramIndex
+							break
+						}
+						paramIndex++
+					}
+					if tIndex != -1 {
+						break
+					}
+				}
+			}
+
+			if tIndex == -1 {
+				return true
+			}
+
+			callPos := fset.Position(call.Pos())
+
+			// Missing argument.
+			if len(call.Args) <= tIndex {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: function %q expects parameter t *testing.T",
+						callPos.Filename,
+						callPos.Line,
+						ident.Name))
+				return true
+			}
+
+			arg, ok := call.Args[tIndex].(*ast.Ident)
+			if !ok || arg.Name != "t" {
+				*errs = append(*errs,
+					fmt.Sprintf("%s:%d: function %q should be called with t for parameter %d",
+						callPos.Filename,
+						callPos.Line,
+						ident.Name,
+						tIndex+1))
+			}
+
+			return true
+		})
+	}
+}
+
+func isTestingTType(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+
+	return pkg.Name == "testing" && sel.Sel.Name == "T"
+}
+
+func validateMagicNumbers(root string, errs *[]string) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		// Collect constant names.
+		constNames := make(map[string]bool)
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.CONST {
+				continue
+			}
+
+			for _, spec := range genDecl.Specs {
+				vs := spec.(*ast.ValueSpec)
+				for _, name := range vs.Names {
+					constNames[name.Name] = true
+				}
+			}
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.INT {
+				return true
+			}
+
+			// Ignore common values.
+			switch lit.Value {
+			case "0", "1", "-1":
+				return true
+			}
+
+			// Ignore constant declarations.
+			parentConst := false
+			ast.Inspect(file, func(parent ast.Node) bool {
+				gen, ok := parent.(*ast.GenDecl)
+				if ok && gen.Tok == token.CONST {
+					if lit.Pos() >= gen.Pos() && lit.End() <= gen.End() {
+						parentConst = true
+						return false
+					}
+				}
+				return true
+			})
+			if parentConst {
+				return true
+			}
+
+			// Ignore array declarations.
+			if arr, ok := n.(*ast.ArrayType); ok {
+				_ = arr
+				return true
+			}
+
+			pos := fset.Position(lit.Pos())
+
+			*errs = append(*errs,
+				fmt.Sprintf("%s:%d: magic number %s detected; define a named constant instead",
+					pos.Filename,
+					pos.Line,
+					lit.Value))
+
+			return true
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if len(*errs) > 0 {
+		return fmt.Errorf(strings.Join(*errs, "\n"))
+	}
+
+	return nil
 }
