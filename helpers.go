@@ -1784,6 +1784,10 @@ func validateConfigurePoliciesSignature(root string, errs *[]string) error {
 		if info.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
+		// Skip deviations.go files.
+		// if filepath.Base(path) == "deviations.go" {
+		// 	return nil
+		// }
 
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
